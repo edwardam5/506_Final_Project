@@ -7,7 +7,7 @@
  
  git init
  
-  git clone 
+  git clone https://github.com/edwardam5/506_Final_Project.git
     
     
 ## Project Intro/Objective 
