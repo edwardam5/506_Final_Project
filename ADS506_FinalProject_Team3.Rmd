@@ -1,0 +1,406 @@
+---
+title: "ADS 506 Final Project: Time Sereis Analysis of U.S. Road Traffic Injuries from 2002-2010"
+author: "Team 3: Anusia Edward & Harini Lakshmanan"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(VIM)
+library('fastDummies')
+library(skimr)
+library(caret)
+library(corrplot)
+library(forecast)
+library(zoo)
+```
+
+# Appendix A
+
+# Preprocessing/EDA 
+```{r}
+#loading in the dataset 
+traffic_1 = read.csv("~/Desktop/road-traffic-injuries-02-10.csv")
+```
+
+```{r}
+#skim(traffic_1)
+```
+
+```{r}
+# dimensionality reduction 
+keep <- c("reportyear", "county_name", "region_name", "mode",  
+          "totalpop", "poprate", "severity","injuries")
+traffic_1 = traffic_1[keep]
+head(traffic_1)
+```
+
+```{r}
+# removing redundant rows 
+traffic_1 <- traffic_1[!is.na(traffic_1$totalpop), ]
+head(traffic_1)
+```
+
+```{r}
+# summary/descriptive stats of data 
+summary(traffic_1)
+```
+
+```{r}
+# formatting adjustments 
+traffic_2 <- traffic_1
+traffic_2$county_name <- sub(" ", "_", traffic_1$county_name)
+traffic_2$severity <- sub(" ", "_", traffic_1$severity)
+traffic_2$mode <- sub(" ", "_", traffic_1$mode)
+traffic_2$mode <- sub("/", "_", traffic_1$mode)
+traffic_2$region_name <- sub("/", "_", traffic_1$region_name)
+traffic_2$region_name <- sub("/", "_", traffic_1$region_name)
+```
+
+```{r}
+# focusing the study on southern California
+traffic_2s <- subset(traffic_2, 
+                          region_name == 'Southern California')
+```
+
+```{r}
+# dropping region category as its all soCAL
+traffic_2s <- subset(traffic_2s, select = -(region_name)) 
+```
+
+```{r}
+# filling missing variables for poprate and injuries using knn imputation 
+traffic_fill <- kNN(traffic_2s, variable = c("injuries", "poprate"), k=5)
+```
+
+```{r}
+# double checking that all NAs were handled 
+summary(traffic_fill)
+```
+
+```{r}
+# removing poprate_imp and injuries_imp 
+traffic_fill <- subset(traffic_fill, select = reportyear:injuries)
+```
+
+```{r}
+# boxplots of numeric variables to check for outliers:totalpop,poprate,injuries
+par(mfrow=c(1,3))
+boxplot(traffic_fill$totalpop, xlab="Total Population", ylab = "Frequency", 
+     main = "Boxplot of Total Population")
+boxplot(traffic_fill$poprate, xlab="Population Rate", ylab = "Frequency", 
+     main = "Boxplot of Population Rate")
+boxplot(traffic_fill$injuries, xlab="Total Injuries", ylab = "Frequency", 
+     main = "Boxplot of Total Injuries")
+```
+
+```{r}
+# handling outliers using IQR for totalpop
+Q1_totalpop <- quantile(traffic_fill$totalpop, .25)
+Q3_totalpop <- quantile(traffic_fill$totalpop, .75)
+IQR_totalpop <- IQR(traffic_fill$totalpop)
+
+#only keep rows in dataframe that have values within 1.5*IQR of Q1 and Q3
+traffic_out12 <- subset(traffic_fill, traffic_fill$totalpop> (Q1_totalpop- 1.5*IQR_totalpop) & traffic_fill$totalpop< (Q3_totalpop + 1.5*IQR_totalpop))
+```
+
+```{r}
+# handling outliers using IQR for poprate injuries
+Q1_poprate <- quantile(traffic_out12$poprate, .25)
+Q3_poprate <- quantile(traffic_out12$poprate, .75)
+IQR_poprate <- IQR(traffic_out12$poprate)
+
+#only keep rows in dataframe that have values within 1.5*IQR of Q1 and Q3
+traffic_out1 <- subset(traffic_out12, traffic_out12$poprate> (Q1_poprate- 1.5*IQR_poprate) & traffic_out12$poprate< (Q3_poprate + 1.5*IQR_poprate))
+```
+
+```{r}
+# handling outliers using IQR for injuries
+Q1_injuries <- quantile(traffic_out1$injuries, .25)
+Q3_injuries <- quantile(traffic_out1$injuries, .75)
+IQR_injuries <- IQR(traffic_out1$injuries)
+
+#only keep rows in dataframe that have values within 1.5*IQR of Q1 and Q3
+traffic_out <- subset(traffic_out1, traffic_out1$injuries> (Q1_injuries- 1.5*IQR_injuries) & traffic_out1$injuries< (Q3_injuries + 1.5*IQR_injuries))
+```
+
+```{r}
+# boxplots after removal of outliers 
+par(mfrow=c(3,2))
+boxplot(traffic_out$totalpop, xlab="Total Population", ylab = "Frequency", 
+     main = "Boxplot of Total Population without Outliers")
+boxplot(traffic_fill$totalpop, xlab="Total Population", ylab = "Frequency", 
+     main = "Boxplot of Total Population")
+boxplot(traffic_out$poprate, xlab="Population Rate", ylab = "Frequency", 
+     main = "Boxplot of Population Rate without Outliers")
+boxplot(traffic_fill$poprate, xlab="Population Rate", ylab = "Frequency", 
+     main = "Boxplot of Population Rate")
+boxplot(traffic_out$injuries, xlab="Total Injuries", ylab = "Frequency", 
+     main = "Boxplot of Total Injuries without Outliers")
+boxplot(traffic_fill$injuries, xlab="Total Injuries", ylab = "Frequency", 
+     main = "Boxplot of Total Injuries")
+```
+
+```{r}
+# histograms of numeric variables to check for skewness 
+par(mfrow=c(1,3))
+hist(traffic_out$totalpop, xlab="Total Population", ylab = "Frequency", 
+     main = "Histogram of Total Population")
+hist(traffic_out$poprate, xlab="Population Rate", ylab = "Frequency", 
+     main = "Histogram of Population Rate")
+hist(traffic_out$injuries, xlab="Total Injuries", ylab = "Frequency", 
+     main = "Histogram of Total Injuries")
+```
+
+```{r}
+# handling skewness using box-cox transformation 
+traffic_norm <- traffic_out 
+
+bct_totalpop <- BoxCoxTrans(traffic_norm$totalpop)
+hcv_totalpop <- predict(bct_totalpop, traffic_norm$totalpop)
+traffic_norm$totalpop <- hcv_totalpop
+
+bct_poprate <- BoxCoxTrans(traffic_norm$poprate)
+hcv_poprate <- predict(bct_poprate, traffic_norm$poprate)
+traffic_norm$poprate <- hcv_poprate
+
+bct_injuries <- BoxCoxTrans(traffic_norm$injuries)
+hcv_injuries<- predict(bct_injuries, traffic_norm$injuries)
+traffic_norm$injuries <- hcv_injuries
+```
+
+```{r}
+# histograms after normalizations 
+par(mfrow=c(3,2))
+hist(traffic_norm$totalpop, xlab="Total Population", ylab = "Frequency", 
+     main = "Normalized Histogram of Total Population")
+hist(traffic_out$totalpop, xlab="Total Population", ylab = "Frequency", 
+     main = "Histogram of Total Population")
+hist(traffic_norm$poprate, xlab="Population Rate", ylab = "Frequency", 
+     main = "Normalized Histogram of Population Rate")
+hist(traffic_out$poprate, xlab="Population Rate", ylab = "Frequency", 
+     main = "Histogram of Population Rate")
+hist(traffic_norm$injuries, xlab="Total Injuries", ylab = "Frequency", 
+     main = "Normalized Histogram of Total Injuries")
+hist(traffic_out$injuries, xlab="Total Injuries", ylab = "Frequency", 
+     main = "Histogram of Total Injuries")
+```
+
+```{r}
+# dummy coding categorical variables:county_name, severity,and mode
+traffic_dum <- dummy_cols(traffic_norm, select_columns = c('county_name', 
+                                                           'mode', 'severity'),
+           remove_selected_columns = TRUE)
+traffic_dum <- subset(traffic_dum, select = -c(mode_ND, severity_ND)) 
+```
+
+```{r}
+# time plots
+# creating time plots 
+traffic.ts <- ts(traffic_out$injuries, start = c(2002, 1), 
+                         end =c(2011, 4), frequency = 12)
+plot(traffic.ts, type = "o", xlab = "Year", 
+     ylab = "Traffic Incidents in California", ylim = c(1, 20), 
+     main = "2002-2010 Traffic Incidents in California")
+```
+
+```{r}
+traffic_decomp <- stl(traffic.ts, s.window = 5,  t.window=15)
+plot(traffic_decomp, 
+     main = "Systematic Components of Traffic Incidents in California")
+```
+
+```{r}
+# correlation plots 
+corrplot(cor(traffic_dum), method="color", addCoef.col = 1, number.cex = 0.5,
+         tl.cex = 0.5)
+```
+
+
+```{r}
+# splitting into train and test 
+nValid_f <- 9
+nTrain_f <- length(traffic.ts) - nValid_f
+train_f.ts <- window(traffic.ts, start = c(2002, 1), end = c(2002, nTrain_f))
+valid_f.ts <- window(traffic.ts, start = c(2002, nTrain_f + 1), 
+                   end = c(2002, nTrain_f + nValid_f))
+```
+
+# Models + Model Evaluations
+```{r}
+# Linear Regression Model
+train_f.lm.trend.season <- tslm(train_f.ts ~ trend + I(trend^2) + season)
+summary(train_f.lm.trend.season)
+# predictions 
+train_f.lm.trend.season.pred <- forecast(train_f.lm.trend.season, h = nValid_f, 
+                                       level = 0)
+# actual vs. forecast plot
+plot(train_f.lm.trend.season.pred, ylim = c(0, 20),  
+     ylab = "Traffic Related Injuries in Southern CA",xlab = "Time", bty = "l", 
+     xaxt = "n", xlim = c(2002,2011), main = "Actual vs. Forecasted Plot", 
+     flty = 2)
+axis(1, at = seq(2002, 2011, 1), labels = format(seq(2002, 2011, 1)))
+lines(train_f.lm.trend.season.pred$fitted, lwd = 2, col = "blue")
+lines(valid_f.ts)
+accuracy(train_f.lm.trend.season.pred$mean, valid_f.ts)
+```
+
+```{r}
+# Holt-Winter's Exponential Smoothing w/additive error+trend no seasonality 
+hwin_AANf <- ets(train_f.ts, model = "AAN")
+hwin_AANf.pred <- forecast(hwin_AANf, h = nValid_f, level = 0)
+accuracy(hwin_AANf.pred$mean, valid_f.ts)
+plot(hwin_AANf.pred, ylim = c(0, 20),  
+     ylab = "Traffic Injuries in Southern CA", 
+     xlab = "Time", bty = "l", xaxt = "n", xlim = c(2002,2011), 
+     main = "Holt-Winter's Exponential Smoothing with AAN",
+     flty = 2)
+axis(1, at = seq(2002, 2011, 1), labels = format(seq(2002, 2011, 1)))
+lines(hwin_AANf.pred$fitted, lwd = 2, col = "blue")
+lines(valid_f.ts)
+```
+
+```{r}
+# Holt-Winter's Exponential Smoothing w/additive error, additive trend, 
+# and additive seasonality  
+hwin_AAAf <- ets(train_f.ts, model = "AAA")
+hwin_AAAf.pred <- forecast(hwin_AAAf, h = nValid_f, level = 0)
+accuracy(hwin_AAAf.pred$mean, valid_f.ts)
+plot(hwin_AAAf.pred, ylim = c(0, 20),  
+     ylab = "Traffic Injuries in Southern CA", 
+     xlab = "Time", bty = "l", xaxt = "n", xlim = c(2002,2011), 
+     main = "Holt-Winter's Exponential Smoothing with AAA",
+     flty = 2)
+axis(1, at = seq(2002, 2011, 1), labels = format(seq(2002, 2011, 1)))
+lines(hwin_AAAf.pred$fitted, lwd = 2, col = "blue")
+lines(valid_f.ts)
+```
+
+```{r}
+# Holt-Winter's Exponential Smoothing w/additive error, no trend, 
+# and additive seasonality 
+hwin_ANAf <- ets(train_f.ts, model = "ANA")
+hwin_ANAf.pred <- forecast(hwin_ANAf, h = nValid_f, level = 0)
+plot(hwin_ANAf.pred, ylim = c(0, 20),  
+     ylab = "Traffic Injuries in Southern CA", 
+     xlab = "Time", bty = "l", xaxt = "n", xlim = c(2002,2011), 
+     main = "Holt-Winter's Exponential Smoothing with ANA",
+     flty = 2)
+axis(1, at = seq(2002, 2011, 1), labels = format(seq(2002, 2011, 1)))
+lines(hwin_ANAf.pred$fitted, lwd = 2, col = "blue")
+lines(valid_f.ts)
+accuracy(hwin_ANAf.pred$mean, valid_f.ts)
+```
+
+```{r}
+# trailing moving average model 
+ma_f.trailing <- rollmean(train_f.ts, k = 12, align = "right")
+last_f.ma <- tail(ma_f.trailing, 1)
+ma_f.trailing.pred <- ts(rep(last_f.ma, nValid_f), 
+                         start = c(2002, nTrain_f + 1),
+                         end = c(2002, nTrain_f + nValid_f), freq = 12)
+plot(train_f.ts, ylim = c(0, 20),  ylab = "Traffic Injuries in Southern CA", 
+     xlab = "Time", bty = "l", xaxt = "n",xlim = c(2002,2011), main = "")
+axis(1, at = seq(2002, 2011, 1), labels = format(seq(2002, 2011, 1)))
+lines(ma_f.trailing, lwd = 2, col = "blue")
+lines(ma_f.trailing.pred, lwd = 2, col = "blue", lty = 2)
+lines(valid_f.ts)
+accuracy(ma_f.trailing.pred, valid_f.ts)
+```
+
+```{r}
+# Model Evaluations 
+accuracy(train_f.lm.trend.season.pred$mean, valid_f.ts)
+accuracy(hwin_AANf.pred$mean, valid_f.ts)
+accuracy(hwin_AAAf.pred$mean, valid_f.ts)
+accuracy(hwin_ANAf.pred$mean, valid_f.ts)
+accuracy(ma_f.trailing.pred, valid_f.ts)
+```
+
+```{r}
+##ARIMA
+traffic_dum.ts=ts(traffic_dum$injuries, start = c(2001,1), end = c(2010,5), 
+                  freq=5)
+n=floor(length(traffic_dum.ts)/10)
+train.ts <- window(traffic_dum.ts, start = c(2001, 1), end = c(2009, n))
+valid.ts <- window(traffic_dum.ts, start = c(2010, 1), end = c(2010, n))
+
+library(forecast)
+train.trend <- tslm(train.ts ~ trend + I(trend^2) + season)
+train.trend.arima <- Arima(train.trend$residuals, order = c(3,2,3))
+train.trend.arima.pred <- forecast(train.trend.arima, h = n)
+summary(train.trend.arima)
+```
+```{r}
+acf(train.trend.arima$residuals)
+```
+```{r}
+pacf(train.trend.arima$residuals)
+```
+```{r}
+train.trend.arima.pred
+```
+
+```{r}
+plot(train.trend$residuals, ylab = "Injury Normalized",
+     xlab = "Time", bty = "l", xaxt = "n", xlim = c(2001,2011), ylim=c(-1.5,2), 
+     main = "")
+axis(1, at = seq(2001, 2011, 1), labels = format(seq(2001, 2011, 1)))
+lines(train.trend.arima.pred$fitted, lwd = 2, col = "blue")
+lines(valid.ts, col = 'red', lwd=2,)
+lines(train.trend.arima.pred$mean, lwd = 2, col = "green")
+legend(2001,2,c("Train data","Arima model train", "Validation data", 
+                "Arima Validation pred"), lty=c(1,1,1,1),
+       lwd=c(2,2,2,2), bty = "n", col =c("black","blue","red","green"))
+```
+
+
+```{r}
+valid.trend.arima.pred <- forecast(train.trend.arima, newdata=vaild.ts)
+valid.trend.arima.pred
+```
+
+```{r}
+## Forecast from ARIMA
+autoplot(train.trend.arima.pred)
+```
+
+```{r}
+## Neural Network
+traffic_dum.ts=ts(traffic_dum$injuries, start = c(2001,1), end = c(2010,5), 
+                  freq=5)
+n=floor(length(traffic_dum.ts)/10)
+train.ts <- window(traffic_dum.ts, start = c(2001, 1), end = c(2009, n))
+valid.ts <- window(traffic_dum.ts, start = c(2010, 1), end = c(2010, n))
+
+library(forecast)
+train.trend <- tslm(train.ts ~ trend + I(trend^2) + season)
+train.trend.nnet <- nnetar(train.trend$residuals, repeats=20, P=1, size=7)
+train.trend.nnet.pred <- forecast(train.trend.nnet, h = n)
+summary(train.trend.nnet.pred)
+```
+
+```{r}
+train.trend.nnet.pred
+```
+
+```{r}
+plot(train.trend$residuals, ylab = "Injury Normalized",
+     xlab = "Time", bty = "l", xaxt = "n", xlim = c(2001,2011), 
+     ylim=c(-1.5,2), main = "")
+axis(1, at = seq(2001, 2011, 1), labels = format(seq(2001, 2011, 1)))
+lines(train.trend.nnet.pred$fitted, lwd = 2, col = "blue")
+lines(valid.ts, col = 'red', lwd=2,)
+lines(train.trend.nnet.pred$mean, lwd = 2, col = "green")
+legend(2001,2,c("Train data","NN model train", 
+                "Validation data", "NN Validation pred"), lty=c(1,1,2,2),
+       lwd=c(2,2,2,2), bty = "n", col =c("black","blue","blue","red"))
+```
+
+```{r}
+## Forecast from NN
+autoplot(train.trend.nnet.pred)
+```
